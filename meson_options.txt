@@ -1,0 +1,6 @@
+option(
+  'example',
+  type: 'feature',
+  value: 'auto',
+  description: 'build sokol_app example',
+)
