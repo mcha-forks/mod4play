@@ -10921,7 +10921,7 @@ static bool LoadIT(MEMFILE *m)
         if (s->Length == 0 || !(s->Flags & SMPF_ASSOCIATED_WITH_HEADER))
             continue; // safely skip this sample
 
-        if (s->Cvt & 0b11111010)
+        if (s->Cvt & 250 /* 0b11111010 */)
             continue; // not supported
 
         if (!Music_AllocateSample(i, s->Length << Sample16Bit))
