@@ -3985,7 +3985,7 @@ static void mix_UpdateBuffer(ft_state_t* state, int16_t *buffer, int32_t numSamp
 
 static void mix_UpdateBufferFloat(ft_state_t* state, float *buffer, int32_t numSamples)
 {
-    if (numSamples <= 0)
+    if (numSamples <= 0 || !state)
         return;
 
     if (state->musicPaused) // silence output
@@ -4987,6 +4987,8 @@ static void updateReplayRate(ft_state_t* state)
 
 static void initState(ft_state_t *state)
 {
+    memset(state, 0, sizeof(*state));
+
     state->CDA_MixBuffer = NULL;
     state->masterVol = DEFAULT_MASTER_VOL;
     state->PMPLeft = 0;
@@ -5811,6 +5813,9 @@ typedef struct it_state_t
     slaveChn_t    *ChannelLocationTable[100];
     uint32_t       AllocateNumChannels;
     slaveChn_t    *AllocateSlaveOffset, *LastSlaveChannel;
+
+    uint8_t       *Data;
+    uint32_t       DataLen;
 } it_state_t;
 
 typedef void (*mixFunc)(it_state_t *state, slaveChn_t *sc, int32_t *mixBufPtr, int32_t numSamples);
@@ -5827,7 +5832,7 @@ static const uint16_t FineLinearSlideDownTable[16];
 static const uint16_t LinearSlideDownTable[257];
 static const uint8_t  SlideTable[9] = {1, 4, 8, 16, 32, 64, 96, 128, 255};
 
-static void        InitState(it_state_t *state);
+static void        InitState(it_state_t *state, const uint8_t *data, uint32_t data_len);
 static void        RecalculateAllVolumes(it_state_t *state);
 static void        Update(it_state_t *state);
 static void        Music_InitTempo(it_state_t *state);
@@ -8594,11 +8599,17 @@ static void CommandY(it_state_t *state, hostChn_t *hc)
     }
 }
 
-static void InitState(it_state_t *state) {
+static void InitState(it_state_t *state, const uint8_t* data, uint32_t data_len) {
+    memset(state, 0, sizeof(*state));
+
     state->FirstTimeLoading = true;
     state->FirstTimeInit = true;
     state->RandSeed1 = 0x1234;
     state->RandSeed2 = 0x5678;
+
+    state->Data = malloc(data_len);
+    if (state->Data) memcpy(state->Data, data, data_len);
+    state->DataLen = data_len;
 }
 
 static void RecalculateAllVolumes(it_state_t *state)
@@ -10408,6 +10419,7 @@ void Music_FillAudioBuffer(it_state_t *state, int16_t *buffer, int32_t numSample
 
 void Music_FillAudioBufferFloat(it_state_t *state, float *buffer, int32_t numSamples)
 {
+    if (!state) return;
     if (!state->Song.Playing)
     {
         memset(buffer, 0, numSamples * 2 * sizeof(float));
@@ -12060,23 +12072,23 @@ static int8_t GetModuleType(MEMFILE *m) // 8bb: added this
     return Format;
 }
 
-bool Music_LoadFromData(it_state_t *state, uint8_t *Data, uint32_t DataLen)
+bool Music_LoadFromState(it_state_t *state)
 {
     bool WasCompressed = false;
-    if (DataLen >= 4 + 4) // find out if module is MMCMP compressed
+    if (state->DataLen >= 4 + 4) // find out if module is MMCMP compressed
     {
-        uint32_t Sig1 = *(uint32_t *)&Data[0];
-        uint32_t Sig2 = *(uint32_t *)&Data[4];
+        uint32_t Sig1 = *(uint32_t *)&state->Data[0];
+        uint32_t Sig2 = *(uint32_t *)&state->Data[4];
         if (Sig1 == 0x4352697A && Sig2 == 0x61694E4F) // Sig1 = "ziRCONia"
         {
-            if (unpackMMCMP(&Data, &DataLen))
+            if (unpackMMCMP(&state->Data, &state->DataLen))
                 WasCompressed = true;
             else
                 return false;
         }
     }
 
-    MEMFILE *m = mopen(Data, DataLen);
+    MEMFILE *m = mopen(state->Data, state->DataLen);
     if (m == NULL)
         return false;
 
@@ -12111,7 +12123,7 @@ bool Music_LoadFromData(it_state_t *state, uint8_t *Data, uint32_t DataLen)
 
     mclose(&m);
     if (WasCompressed)
-        free(Data);
+        free(state->Data);
 
     if (WasLoaded)
     {
@@ -12289,7 +12301,7 @@ static const uint16_t LinearSlideDownTable[257] = {
 // 							Implementation - Mod4Play
 //-----------------------------------------------------------------------------------
 
-int m4p_TestFromData(uint8_t *Data, uint32_t DataLen)
+int m4p_TestFromData(const uint8_t *Data, uint32_t DataLen)
 {
     if ((DataLen >= 4 && (Data[0] == 'I' && Data[1] == 'M' && Data[2] == 'P' && Data[3] == 'M')) ||
         (DataLen >= 48 && (Data[44] == 'S' && Data[45] == 'C' && Data[46] == 'R' && Data[47] == 'M')))
@@ -12324,7 +12336,7 @@ int m4p_TestFromData(uint8_t *Data, uint32_t DataLen)
     return M4P_FORMAT_UNKNOWN;
 }
 
-bool m4p_LoadFromData(m4p_state_t *_state, uint8_t *Data, uint32_t DataLen, int32_t mixingFrequency, int32_t mixingBufferSize)
+bool m4p_LoadFromData(m4p_state_t *_state, const uint8_t *Data, uint32_t DataLen, int32_t mixingFrequency, int32_t mixingBufferSize)
 {
     if (!_state) return false;
     _state->current_format = m4p_TestFromData(Data, DataLen);
@@ -12335,11 +12347,11 @@ bool m4p_LoadFromData(m4p_state_t *_state, uint8_t *Data, uint32_t DataLen, int3
         if (!state)
             return false;
 
-        InitState(state);
+        InitState(state, Data, DataLen);
         _state->it_state = state;
 
         if (Music_Init(state, mixingFrequency))
-            return Music_LoadFromData(state, Data, DataLen);
+            return Music_LoadFromState(state);
         else
             return false;
     }
@@ -12405,8 +12417,13 @@ void m4p_Close(m4p_state_t state)
 
 void m4p_FreeSong(m4p_state_t state)
 {
-    if (state.current_format == M4P_FORMAT_IT_S3M)
+    if (state.current_format == M4P_FORMAT_IT_S3M) {
         Music_FreeSong(state.it_state);
-    else
+	free(state.it_state->Data);
+	free(state.it_state);
+    }
+    else {
         freeMusic(state.ft_state);
+	free(state.ft_state);
+    }
 }

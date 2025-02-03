@@ -69,10 +69,10 @@ typedef struct {
 //-----------------------------------------------------------------------------------
 
 // See if song in memory is a supported type (IT/S3M/XM/MOD)
-int m4p_TestFromData(uint8_t *Data, uint32_t DataLen);
+int m4p_TestFromData(const uint8_t *Data, uint32_t DataLen);
 
 // Load song from memory and initialize appropriate replayer
-bool m4p_LoadFromData(m4p_state_t *state, uint8_t *Data, uint32_t DataLen, int32_t mixingFrequency, int32_t mixingBufferSize);
+bool m4p_LoadFromData(m4p_state_t *state, const uint8_t *Data, uint32_t DataLen, int32_t mixingFrequency, int32_t mixingBufferSize);
 
 // Set replayer status to Play (does not generate output)
 void m4p_PlaySong(m4p_state_t state);
