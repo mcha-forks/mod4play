@@ -25,12 +25,14 @@
 
 #define M4PLAYER_SRCBUF_SAMPLES (4096)
 
+static m4p_state_t state;
+
 // common function to read sample stream from mod4play and convert to float
 static void read_samples(float* buffer, int num_samples) {
     assert(num_samples <= M4PLAYER_SRCBUF_SAMPLES);
     // NOTE: for multi-channel playback, the samples are interleaved
     // (e.g. left/right/left/right/...)
-    m4p_GenerateFloatSamples(buffer, num_samples * 2 /* num_channels */ / sizeof(float));
+    m4p_GenerateFloatSamples(state, buffer, num_samples * 2 /* num_channels */ / sizeof(float));
 }
 
 // stream callback, called by sokol_audio when new samples are needed,
@@ -54,8 +56,8 @@ void init(void* user_data) {
         .logger.func = slog_func,
     });
 
-    m4p_LoadFromData(embed_disco_feva_baby_s3m, sizeof(embed_disco_feva_baby_s3m), saudio_sample_rate(), M4PLAYER_SRCBUF_SAMPLES);
-    m4p_PlaySong();
+    m4p_LoadFromData(&state, embed_disco_feva_baby_s3m, sizeof(embed_disco_feva_baby_s3m), saudio_sample_rate(), M4PLAYER_SRCBUF_SAMPLES);
+    m4p_PlaySong(state);
 }
 
 void frame(void* user_data) {
@@ -71,9 +73,9 @@ void frame(void* user_data) {
 void cleanup(void* user_data) {
     (void)user_data;
     saudio_shutdown();
-    m4p_Stop();
-    m4p_Close();
-    m4p_FreeSong();
+    m4p_Stop(state);
+    m4p_Close(state);
+    m4p_FreeSong(state);
     sg_shutdown();
 }
 

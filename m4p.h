@@ -46,12 +46,23 @@ extern "C"
 // 							Enumerations - Mod4Play
 //-----------------------------------------------------------------------------------
 
-enum
+enum m4p_format
 {
     M4P_FORMAT_UNKNOWN = 0,
     M4P_FORMAT_IT_S3M  = 1,
     M4P_FORMAT_XM_MOD  = 2
 };
+
+typedef struct it_state_t it_state_t;
+typedef struct ft_state_t ft_state_t;
+
+typedef struct {
+    enum m4p_format current_format;
+    union {
+        it_state_t *it_state;
+        ft_state_t *ft_state;
+    };
+} m4p_state_t;
 
 //-----------------------------------------------------------------------------------
 // 							Implementation - Mod4Play
@@ -61,25 +72,25 @@ enum
 int m4p_TestFromData(uint8_t *Data, uint32_t DataLen);
 
 // Load song from memory and initialize appropriate replayer
-bool m4p_LoadFromData(uint8_t *Data, uint32_t DataLen, int32_t mixingFrequency, int32_t mixingBufferSize);
+bool m4p_LoadFromData(m4p_state_t *state, uint8_t *Data, uint32_t DataLen, int32_t mixingFrequency, int32_t mixingBufferSize);
 
 // Set replayer status to Play (does not generate output)
-void m4p_PlaySong(void);
+void m4p_PlaySong(m4p_state_t state);
 
 // Generate samples and fill buffer
-void m4p_GenerateSamples(int16_t *buffer, int32_t numSamples);
+void m4p_GenerateSamples(m4p_state_t state, int16_t *buffer, int32_t numSamples);
 
 // Generate samples and fill buffer
-void m4p_GenerateFloatSamples(float *buffer, int32_t numSamples);
+void m4p_GenerateFloatSamples(m4p_state_t state, float *buffer, int32_t numSamples);
 
 // Set replayer status to Stop
-void m4p_Stop(void);
+void m4p_Stop(m4p_state_t state);
 
 // De-initialize replayer
-void m4p_Close(void);
+void m4p_Close(m4p_state_t state);
 
 // Free song memfile
-void m4p_FreeSong(void);
+void m4p_FreeSong(m4p_state_t state);
 
 #ifdef __cplusplus
 }

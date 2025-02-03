@@ -9,7 +9,7 @@ project(
     'c_std=gnu11,c11,gnu99,c99,gnu89,c89',
     'default_library=static',
   ],
-  meson_version: '>=0.54.0',
+  meson_version: '>=1.1.0',
 )
 
 cc = meson.get_compiler('c')
