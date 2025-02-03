@@ -42,6 +42,21 @@ extern "C"
 #include <stdbool.h>
 #include <stdint.h>
 
+//-----------------------------------------------------------------------------------
+// 							Enumerations - Mod4Play
+//-----------------------------------------------------------------------------------
+
+enum
+{
+    M4P_FORMAT_UNKNOWN = 0,
+    M4P_FORMAT_IT_S3M  = 1,
+    M4P_FORMAT_XM_MOD  = 2
+};
+
+//-----------------------------------------------------------------------------------
+// 							Implementation - Mod4Play
+//-----------------------------------------------------------------------------------
+
 // See if song in memory is a supported type (IT/S3M/XM/MOD)
 int m4p_TestFromData(uint8_t *Data, uint32_t DataLen);
 
