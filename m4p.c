@@ -1020,7 +1020,7 @@ typedef struct ft_state_t
     songTyp         song;
     stmTyp          stm[32];
 
-    int32_t  soundBufferSize;
+    int32_t         soundBufferSize;
 } ft_state_t;
 
 typedef void (*volKolEfxRoutine)(ft_state_t* state, stmTyp *ch);
@@ -3715,9 +3715,9 @@ static void P_StartTone(ft_state_t* state, sampleTyp *s, int32_t smpStartPos)
 }
 
 // 8bb: added these two
-static bool mix_Init(ft_state_t* state, int32_t audioBufferSize)
+static bool mix_Init(ft_state_t* state)
 {
-    state->CDA_MixBuffer = (int32_t *)malloc(audioBufferSize * 2 * sizeof(int32_t));
+    state->CDA_MixBuffer = (int32_t *)malloc(state->soundBufferSize * 2 * sizeof(int32_t));
     if (state->CDA_MixBuffer == NULL)
         return false;
 
@@ -3916,15 +3916,29 @@ static void mix_SaveIPVolumes(ft_state_t* state)
     }
 }
 
-static void mix_UpdateBuffer(ft_state_t* state, int16_t *buffer, int32_t numSamples)
+static int mix_UpdateBuffer(ft_state_t* state, int16_t *buffer, int32_t _numSamples)
 {
-    if (numSamples <= 0)
-        return;
+    if (_numSamples <= 0 || !state)
+        return 0;
+
+    int32_t numSamples = _numSamples;
+
+    if (numSamples > state->soundBufferSize) {
+        // growth factor = 2
+        int32_t *New_MixBuffer = realloc(state->CDA_MixBuffer, (numSamples * 2) * (2 * sizeof(int32_t)));
+        if (New_MixBuffer) {
+            state->CDA_MixBuffer = New_MixBuffer;
+            state->soundBufferSize = numSamples;
+        } else {
+            numSamples = state->soundBufferSize;
+            _numSamples = numSamples;
+        }
+    }
 
     if (state->musicPaused) // silence output
     {
         memset(buffer, 0, numSamples * (2 * sizeof(int16_t)));
-        return;
+        return numSamples;
     }
 
     memset(state->CDA_MixBuffer, 0, numSamples * (2 * sizeof(int32_t)));
@@ -3981,17 +3995,33 @@ static void mix_UpdateBuffer(ft_state_t* state, int16_t *buffer, int32_t numSamp
             buffer[i] = (int16_t)out32;
         }
     }
+
+    return _numSamples;
 }
 
-static void mix_UpdateBufferFloat(ft_state_t* state, float *buffer, int32_t numSamples)
+static int mix_UpdateBufferFloat(ft_state_t* state, float *buffer, int32_t _numSamples)
 {
-    if (numSamples <= 0 || !state)
-        return;
+    if (_numSamples <= 0 || !state)
+        return 0;
+
+    int32_t numSamples = _numSamples;
+
+    if (numSamples > state->soundBufferSize) {
+        // growth factor = 2
+        int32_t *New_MixBuffer = realloc(state->CDA_MixBuffer, (numSamples * 2) * (2 * sizeof(int32_t)));
+        if (New_MixBuffer) {
+            state->CDA_MixBuffer = New_MixBuffer;
+            state->soundBufferSize = numSamples;
+        } else {
+            numSamples = state->soundBufferSize;
+            _numSamples = numSamples;
+        }
+    }
 
     if (state->musicPaused) // silence output
     {
-        memset(buffer, 0, numSamples * (2 * sizeof(int16_t)));
-        return;
+        memset(buffer, 0, numSamples * (2 * sizeof(int32_t)));
+        return numSamples;
     }
 
     memset(state->CDA_MixBuffer, 0, numSamples * (2 * sizeof(int32_t)));
@@ -4072,6 +4102,8 @@ static void mix_UpdateBufferFloat(ft_state_t* state, float *buffer, int32_t numS
         }
     }
 #endif
+
+    return _numSamples;
 }
 
 /***************************************************************************
@@ -4923,7 +4955,7 @@ static bool startMusic(ft_state_t* state)
     state->speedVal        = ((state->realReplayRate * 5) / 2) / state->song.speed;
     state->quickVolSizeVal = state->realReplayRate / 200;
 
-    if (!mix_Init(state, state->soundBufferSize))
+    if (!mix_Init(state))
         return false;
 
     state->musicPaused = false;
@@ -4995,7 +5027,7 @@ static void initState(ft_state_t *state)
     state->CDA_Amp = 8 * DEFAULT_AMP;
 }
 
-static bool initMusic(ft_state_t* state, int32_t audioFrequency, int32_t audioBufferSize, bool interpolation, bool volumeRamping)
+static bool initMusic(ft_state_t* state, int32_t audioFrequency, bool interpolation, bool volumeRamping)
 {
     freeMusic(state);
     memset(state->stm, 0, sizeof(state->stm));
@@ -5003,7 +5035,7 @@ static bool initMusic(ft_state_t* state, int32_t audioFrequency, int32_t audioBu
     state->realReplayRate = CLAMP(audioFrequency, 8000, 96000);
     updateReplayRate(state);
 
-    state->soundBufferSize   = audioBufferSize;
+    state->soundBufferSize   = 4096;
     state->interpolationFlag = interpolation;
     state->volumeRampingFlag = volumeRamping;
 
@@ -5803,6 +5835,7 @@ typedef struct it_state_t
     driver_t       Driver;
     uint16_t       MixVolume;
     int32_t        BytesToMix, *MixBuffer, MixTransferRemaining, MixTransferOffset;
+    size_t         MixBufferSize;
     uint8_t       *PatternDataArea, EncodingInfo[MAX_HOST_CHANNELS * 6];
     bool           FirstTimeLoading;
     bool           FirstTimeInit;
@@ -10406,27 +10439,54 @@ static void Update(it_state_t *state)
         UpdateSamples(state);
 }
 
-void Music_FillAudioBuffer(it_state_t *state, int16_t *buffer, int32_t numSamples)
+int Music_FillAudioBuffer(it_state_t *state, int16_t *buffer, int32_t numSamples)
 {
+    if (!state) return 0;
+
+    assert(numSamples >= 0);
+
+    if (numSamples * 2 * sizeof(int32_t) > state->MixBufferSize) {
+        // growth factor = 2
+        int32_t *new_MixBuffer = realloc(state->MixBuffer, (numSamples * 2) * 2 * sizeof(int32_t));
+        if (new_MixBuffer) {
+            state->MixBuffer = new_MixBuffer;
+            state->MixBufferSize = (numSamples * 2) * 2 * sizeof(int32_t);
+        }
+    }
+
     if (!state->Song.Playing)
     {
         memset(buffer, 0, numSamples * 2 * sizeof(int16_t));
-        return;
+        return numSamples;
     }
 
     SB16_Mix(state, numSamples, buffer);
+    return numSamples;
 }
 
-void Music_FillAudioBufferFloat(it_state_t *state, float *buffer, int32_t numSamples)
+int Music_FillAudioBufferFloat(it_state_t *state, float *buffer, int32_t numSamples)
 {
-    if (!state) return;
+    if (!state) return 0;
+
+    assert(numSamples >= 0);
+
+    if (numSamples * 2 * sizeof(int32_t) > state->MixBufferSize) {
+        // growth factor = 2
+        int32_t *new_MixBuffer = realloc(state->MixBuffer, (numSamples * 2) * 2 * sizeof(int32_t));
+        if (new_MixBuffer) {
+            state->MixBuffer = new_MixBuffer;
+            state->MixBufferSize = (numSamples * 2) * 2 * sizeof(int32_t);
+        }
+    }
+
     if (!state->Song.Playing)
     {
         memset(buffer, 0, numSamples * 2 * sizeof(float));
-        return;
+        return numSamples;
     }
 
     SB16_Mix_Float(state, numSamples, buffer);
+    return numSamples;
 }
 
 bool Music_Init(it_state_t *state, int32_t mixingFrequency)
@@ -12336,7 +12396,7 @@ int m4p_TestFromData(const uint8_t *Data, uint32_t DataLen)
     return M4P_FORMAT_UNKNOWN;
 }
 
-bool m4p_LoadFromData(m4p_state_t *_state, const uint8_t *Data, uint32_t DataLen, int32_t mixingFrequency, int32_t mixingBufferSize)
+bool m4p_LoadFromData(m4p_state_t *_state, const uint8_t *Data, uint32_t DataLen, int32_t mixingFrequency)
 {
     if (!_state) return false;
     _state->current_format = m4p_TestFromData(Data, DataLen);
@@ -12364,7 +12424,7 @@ bool m4p_LoadFromData(m4p_state_t *_state, const uint8_t *Data, uint32_t DataLen
         initState(state);
         _state->ft_state = state;
 
-        if (initMusic(state, mixingFrequency, mixingBufferSize, true, true))
+        if (initMusic(state, mixingFrequency, true, true))
             return loadMusicFromData(state, Data, DataLen);
         else
             return false;
@@ -12381,20 +12441,20 @@ void m4p_PlaySong(m4p_state_t state)
         startPlaying(state.ft_state);
 }
 
-void m4p_GenerateSamples(m4p_state_t state, int16_t *buffer, int32_t numSamples)
+int m4p_GenerateSamples(m4p_state_t state, int16_t *buffer, int32_t numSamples)
 {
     if (state.current_format == M4P_FORMAT_IT_S3M)
-        Music_FillAudioBuffer(state.it_state, buffer, numSamples);
+        return Music_FillAudioBuffer(state.it_state, buffer, numSamples);
     else
-        mix_UpdateBuffer(state.ft_state, buffer, numSamples);
+        return mix_UpdateBuffer(state.ft_state, buffer, numSamples);
 }
 
-void m4p_GenerateFloatSamples(m4p_state_t state, float *buffer, int32_t numSamples)
+int m4p_GenerateFloatSamples(m4p_state_t state, float *buffer, int32_t numSamples)
 {
     if (state.current_format == M4P_FORMAT_IT_S3M)
-        Music_FillAudioBufferFloat(state.it_state, buffer, numSamples);
+        return Music_FillAudioBufferFloat(state.it_state, buffer, numSamples);
     else
-        mix_UpdateBufferFloat(state.ft_state, buffer, numSamples);
+        return mix_UpdateBufferFloat(state.ft_state, buffer, numSamples);
 }
 
 void m4p_Stop(m4p_state_t state)
@@ -12419,11 +12479,11 @@ void m4p_FreeSong(m4p_state_t state)
 {
     if (state.current_format == M4P_FORMAT_IT_S3M) {
         Music_FreeSong(state.it_state);
-	free(state.it_state->Data);
-	free(state.it_state);
+        free(state.it_state->Data);
+        free(state.it_state);
     }
     else {
         freeMusic(state.ft_state);
-	free(state.ft_state);
+        free(state.ft_state);
     }
 }

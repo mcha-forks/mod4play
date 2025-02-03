@@ -18,18 +18,12 @@
 #include "sokol/sokol_glue.h"
 #include "../m4p.h"
 #include "data/mods.h"
-#include <assert.h>
-#include <math.h>
-#include <stdint.h>
 #include <string.h>
-
-#define M4PLAYER_SRCBUF_SAMPLES (4096)
 
 static m4p_state_t state;
 
 // common function to read sample stream from mod4play and convert to float
 static void read_samples(float* buffer, int num_samples) {
-    assert(num_samples <= M4PLAYER_SRCBUF_SAMPLES);
     // NOTE: for multi-channel playback, the samples are interleaved
     // (e.g. left/right/left/right/...)
     m4p_GenerateFloatSamples(state, buffer, num_samples * 2 /* num_channels */ / sizeof(float));
@@ -56,7 +50,7 @@ void init(void* user_data) {
         .logger.func = slog_func,
     });
 
-    m4p_LoadFromData(&state, embed_disco_feva_baby_s3m, sizeof(embed_disco_feva_baby_s3m), saudio_sample_rate(), M4PLAYER_SRCBUF_SAMPLES);
+    m4p_LoadFromData(&state, embed_disco_feva_baby_s3m, sizeof(embed_disco_feva_baby_s3m), saudio_sample_rate());
     m4p_PlaySong(state);
 }
 

@@ -72,16 +72,16 @@ typedef struct {
 int m4p_TestFromData(const uint8_t *Data, uint32_t DataLen);
 
 // Load song from memory and initialize appropriate replayer
-bool m4p_LoadFromData(m4p_state_t *state, const uint8_t *Data, uint32_t DataLen, int32_t mixingFrequency, int32_t mixingBufferSize);
+bool m4p_LoadFromData(m4p_state_t *state, const uint8_t *Data, uint32_t DataLen, int32_t mixingFrequency);
 
 // Set replayer status to Play (does not generate output)
 void m4p_PlaySong(m4p_state_t state);
 
 // Generate samples and fill buffer
-void m4p_GenerateSamples(m4p_state_t state, int16_t *buffer, int32_t numSamples);
+int m4p_GenerateSamples(m4p_state_t state, int16_t *buffer, int32_t numSamples);
 
 // Generate samples and fill buffer
-void m4p_GenerateFloatSamples(m4p_state_t state, float *buffer, int32_t numSamples);
+int m4p_GenerateFloatSamples(m4p_state_t state, float *buffer, int32_t numSamples);
 
 // Set replayer status to Stop
 void m4p_Stop(m4p_state_t state);
