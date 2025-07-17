@@ -5723,9 +5723,10 @@ typedef struct smp_t
 typedef struct hostChn_t
 {
     uint16_t Flags;
-    uint8_t  NotePackMask, RawNote, Ins, Vol, Cmd, CmdVal, OldCmd, OldCmdVal, VolCmd, VolCmdVal;
+    uint8_t  NotePackMask, RawNote, Ins, RawVolColumn, Cmd, CmdVal, OldCmd, OldCmdVal, VolCmd, VolCmdVal;
     uint8_t  MIDIChn, MIDIProg, TranslatedNote, Smp;
-    uint8_t  DKL, EFG, O00, I00, J00, M00, N00, P00, Q00, T00, S00, W00, GOE, SFx;
+    uint8_t  EfxMem_DKL, EfxMem_EFG, EfxMem_O, EfxMem_I, EfxMem_J, EfxMem_N, EfxMem_P;
+    uint8_t  EfxMem_Q, EfxMem_T, EfxMem_S, EfxMem_W, EfxMem_G_Compat, EfxMem_SFx;
     uint8_t  HighSmpOffs;
     uint8_t  HostChnNum, VolSet;
     void    *SlaveChnPtr;
@@ -5749,15 +5750,16 @@ typedef struct envState_t
 
 typedef struct slaveChn_t
 {
+    bool          SmpIs16Bit;
     uint16_t      Flags;
     uint32_t      MixOffset; // 8bb: which sample mix function to use
     uint8_t       LoopMode, LoopDirection;
     int32_t       LeftVolume, RightVolume;
     int32_t       Frequency, FrequencySet;
-    uint8_t       SmpBitDepth, AutoVibratoPos;
+    uint8_t       AutoVibratoPos;
     uint16_t      AutoVibratoDepth;
     int32_t       OldLeftVolume, OldRightVolume;
-    uint8_t       FinalVol7Bit, Vol, VolSet, ChnVol, SmpVol, FinalPan;
+    uint8_t       FinalVol128, Vol, VolSet, ChnVol, SmpVol, FinalPan;
     uint16_t      FadeOut;
     uint8_t       DCT, DCA, Pan, PanSet;
     instrument_t *InsPtr;
@@ -5769,7 +5771,7 @@ typedef struct slaveChn_t
     uint16_t      MIDIBank;
     int32_t       LoopBegin, LoopEnd;
     uint32_t      Frac32;
-    uint16_t      FinalVol15Bit;
+    uint16_t      FinalVol32768;
     int32_t       SamplingPosition;
     int32_t       filtera, filterb, filterc;
     envState_t    VolEnvState, PanEnvState, PitchEnvState;
@@ -6145,11 +6147,13 @@ static void M32Mix16IS(it_state_t *state, slaveChn_t *sc, int32_t *MixBufPtr, in
 
 static void UpdateNoLoop(slaveChn_t *sc, uint32_t numSamples)
 {
-    const uint64_t SamplesToMix = (uint64_t)sc->Delta32 * (uint32_t)numSamples;
+    assert(numSamples <= UINT16_MAX);
+    uint32_t IntSamples = (sc->Delta32 >> MIX_FRAC_BITS) * numSamples;
+    uint32_t FracSamples = (sc->Delta32 & MIX_FRAC_MASK) * numSamples;
 
-    uint32_t SampleOffset = sc->SamplingPosition + (uint32_t)(SamplesToMix >> MIX_FRAC_BITS);
-    sc->Frac32 += SamplesToMix & MIX_FRAC_MASK;
-    SampleOffset += (uint32_t)sc->Frac32 >> MIX_FRAC_BITS;
+    uint32_t SampleOffset = sc->SamplingPosition + IntSamples;
+    sc->Frac32 += FracSamples;
+    SampleOffset += sc->Frac32 >> MIX_FRAC_BITS;
     sc->Frac32 &= MIX_FRAC_MASK;
 
     if (SampleOffset >= (uint32_t)sc->LoopEnd)
@@ -6167,11 +6171,13 @@ static void UpdateNoLoop(slaveChn_t *sc, uint32_t numSamples)
 
 static void UpdateForwardsLoop(slaveChn_t *sc, uint32_t numSamples)
 {
-    const uint64_t SamplesToMix = (uint64_t)sc->Delta32 * (uint32_t)numSamples;
+    assert(numSamples <= UINT16_MAX);
+    uint32_t IntSamples = (sc->Delta32 >> MIX_FRAC_BITS) * numSamples;
+    uint32_t FracSamples = (sc->Delta32 & MIX_FRAC_MASK) * numSamples;
 
-    sc->Frac32 += SamplesToMix & MIX_FRAC_MASK;
+    sc->Frac32 += FracSamples;
     sc->SamplingPosition += sc->Frac32 >> MIX_FRAC_BITS;
-    sc->SamplingPosition += (uint32_t)(SamplesToMix >> MIX_FRAC_BITS);
+    sc->SamplingPosition += IntSamples;
     sc->Frac32 &= MIX_FRAC_MASK;
 
     if ((uint32_t)sc->SamplingPosition >= (uint32_t)sc->LoopEnd) // Reset position...
@@ -6186,16 +6192,16 @@ static void UpdateForwardsLoop(slaveChn_t *sc, uint32_t numSamples)
 
 static void UpdatePingPongLoop(slaveChn_t *sc, uint32_t numSamples)
 {
-    const uint32_t LoopLength = sc->LoopEnd - sc->LoopBegin;
+    assert(numSamples <= UINT16_MAX);
+    uint32_t IntSamples = (sc->Delta32 >> MIX_FRAC_BITS) * numSamples;
+    uint32_t FracSamples = (sc->Delta32 & MIX_FRAC_MASK) * numSamples;
 
-    const uint64_t SamplesToMix = (uint64_t)sc->Delta32 * (uint32_t)numSamples;
-    uint32_t       IntSamples   = (uint32_t)(SamplesToMix >> MIX_FRAC_BITS);
-    uint16_t       FracSamples  = (uint16_t)(SamplesToMix & MIX_FRAC_MASK);
+    const uint32_t LoopLength = sc->LoopEnd - sc->LoopBegin;
 
     if (sc->LoopDirection == DIR_BACKWARDS)
     {
         sc->Frac32 -= FracSamples;
-        sc->SamplingPosition += ((int32_t)sc->Frac32 >> MIX_FRAC_BITS);
+        sc->SamplingPosition -= sc->Frac32 >> MIX_FRAC_BITS;
         sc->SamplingPosition -= IntSamples;
         sc->Frac32 &= MIX_FRAC_MASK;
 
@@ -6205,6 +6211,9 @@ static void UpdatePingPongLoop(slaveChn_t *sc, uint32_t numSamples)
             if (NewLoopPos >= LoopLength)
             {
                 sc->SamplingPosition = (sc->LoopEnd - 1) + (LoopLength - NewLoopPos);
+
+                if (sc->SamplingPosition <= sc->LoopBegin) // 8bb: non-IT2 edge-case safety for extremely high pitches
+                    sc->SamplingPosition = sc->LoopBegin + 1;
             }
             else
             {
@@ -6233,6 +6242,9 @@ static void UpdatePingPongLoop(slaveChn_t *sc, uint32_t numSamples)
                 sc->LoopDirection    = DIR_BACKWARDS;
                 sc->SamplingPosition = (sc->LoopEnd - 1) - NewLoopPos;
                 sc->Frac32           = (uint16_t)(0 - sc->Frac32);
+
+                if (sc->SamplingPosition <= sc->LoopBegin) // 8bb: non-IT2 edge-case safety for extremely high pitches
+                    sc->SamplingPosition = sc->LoopBegin + 1;
             }
         }
     }
@@ -6258,7 +6270,8 @@ static void SB16_MixSamples(it_state_t *state)
 
         if (sc->Flags & SF_FREQ_CHANGE)
         {
-            if ((uint32_t)sc->Frequency >> MIX_FRAC_BITS >= state->Driver.MixSpeed)
+            if ((uint32_t)sc->Frequency>>MIX_FRAC_BITS >= state->Driver.MixSpeed ||
+                    (uint32_t)sc->Frequency >= INT32_MAX/2) // 8bb: non-IT2 limit, but required for safety
             {
                 sc->Flags = SF_NOTE_STOP;
                 if (!(sc->HostChnNum & CHN_DISOWNED))
@@ -6279,16 +6292,16 @@ static void SB16_MixSamples(it_state_t *state)
             {
                 if (!(state->Song.Header.Flags & ITF_STEREO))                                       // 8bb: mono?
                 {
-                    sc->LeftVolume = sc->RightVolume = (sc->FinalVol15Bit * state->MixVolume) >> 8; // 8bb: 0..16384
+                    sc->LeftVolume = sc->RightVolume = (sc->FinalVol32768 * state->MixVolume) >> 8; // 8bb: 0..16384
                 }
                 else if (sc->FinalPan == PAN_SURROUND)
                 {
-                    sc->LeftVolume = sc->RightVolume = (sc->FinalVol15Bit * state->MixVolume) >> 9; // 8bb: 0..8192
+                    sc->LeftVolume = sc->RightVolume = (sc->FinalVol32768 * state->MixVolume) >> 9; // 8bb: 0..8192
                 }
                 else                                                                         // 8bb: normal (panned)
                 {
-                    sc->LeftVolume  = ((64 - sc->FinalPan) * state->MixVolume * sc->FinalVol15Bit) >> 14; // 8bb: 0..16384
-                    sc->RightVolume = (sc->FinalPan * state->MixVolume * sc->FinalVol15Bit) >> 14;
+                    sc->LeftVolume  = ((64 - sc->FinalPan) * state->MixVolume * sc->FinalVol32768) >> 14; // 8bb: 0..16384
+                    sc->RightVolume = (sc->FinalPan * state->MixVolume * sc->FinalVol32768) >> 14;
                 }
             }
         }
@@ -6318,8 +6331,7 @@ static void SB16_MixSamples(it_state_t *state)
         }
 
         const bool    Surround     = (sc->FinalPan == PAN_SURROUND);
-        const bool    Sample16it   = !!(sc->SmpBitDepth & SMPF_16BIT);
-        const mixFunc Mix          = SB16_MixFunctionTables[(state->Driver.MixMode << 2) + (Surround << 1) + Sample16it];
+        const mixFunc Mix = SB16_MixFunctionTables[(state->Driver.MixMode << 2) + (Surround << 1) + sc->SmpIs16Bit];
         int32_t      *MixBufferPtr = state->MixBuffer;
 
         if ((int32_t)LoopLength > 0)
@@ -6337,12 +6349,18 @@ static void SB16_MixSamples(it_state_t *state)
                             if (NewLoopPos >= LoopLength)
                             {
                                 sc->SamplingPosition = (sc->LoopEnd - 1) - (NewLoopPos - LoopLength);
+
+                                if (sc->SamplingPosition <= sc->LoopBegin) // 8bb: non-IT2 edge-case safety for extremely high pitches
+                                    sc->SamplingPosition = sc->LoopBegin + 1;
                             }
                             else
                             {
                                 sc->LoopDirection    = DIR_FORWARDS;
-                                sc->SamplingPosition = sc->LoopBegin + NewLoopPos;
                                 sc->Frac32           = (uint16_t)(0 - sc->Frac32);
+                                sc->SamplingPosition = (sc->LoopEnd - 1) - NewLoopPos;
+
+                                if (sc->SamplingPosition <= sc->LoopBegin) // 8bb: non-IT2 edge-case safety for extremely high pitches
+                                    sc->SamplingPosition = sc->LoopBegin + 1;
                             }
                         }
                     }
@@ -6716,8 +6734,8 @@ static void InitCommandD7(it_state_t *state, hostChn_t *hc, slaveChn_t *sc) // J
 {
     sc->Flags |= SF_RECALC_VOL;
 
-    uint8_t hi = hc->DKL & 0xF0;
-    uint8_t lo = hc->DKL & 0x0F;
+    uint8_t hi = hc->EfxMem_DKL & 0xF0;
+    uint8_t lo = hc->EfxMem_DKL & 0x0F;
 
     if (lo == 0)
     {
@@ -6725,7 +6743,7 @@ static void InitCommandD7(it_state_t *state, hostChn_t *hc, slaveChn_t *sc) // J
         hc->VolSlideDelta = hi >> 4;
         hc->Flags |= HF_UPDATE_EFX_IF_CHAN_ON;
 
-        if (hc->VolSlideDelta == 0x0F)
+        if (hc->VolSlideDelta == 15)
             CommandD(state, hc);
     }
     else if (hi == 0)
@@ -6767,11 +6785,11 @@ static void InitVolumeEffect(it_state_t *state, hostChn_t *hc)
     if (!(hc->NotePackMask & 0x44))
         return;
 
-    int8_t volCmd = (hc->Vol & 0x7F) - 65;
+    int8_t volCmd = (hc->RawVolColumn & 0x7F) - 65;
     if (volCmd < 0)
         return;
 
-    if (hc->Vol & 0x80)
+    if (hc->RawVolColumn & 0x80)
         volCmd += 60;
 
     uint8_t cmd = (uint8_t)volCmd / 10;
@@ -6799,14 +6817,14 @@ static void InitVolumeEffect(it_state_t *state, hostChn_t *hc)
         }
         else if (cmd < 6)
         {
-            hc->EFG = val << 2;
+            hc->EfxMem_EFG = val << 2;
         }
         else if (cmd == 6)
         {
             if (state->Song.Header.Flags & ITF_COMPAT_GXX)
-                hc->GOE = SlideTable[val - 1];
+                hc->EfxMem_G_Compat = SlideTable[val-1];
             else
-                hc->EFG = SlideTable[val - 1];
+                hc->EfxMem_EFG = SlideTable[val-1];
         }
     }
 
@@ -6897,12 +6915,12 @@ static void VolumeCommandD(it_state_t *state, hostChn_t *hc)
 
 static void VolumeCommandE(it_state_t *state, hostChn_t *hc)
 {
-    CommandEChain(state, hc, hc->EFG << 2);
+    CommandEChain(state, hc, hc->EfxMem_EFG << 2);
 }
 
 static void VolumeCommandF(it_state_t *state, hostChn_t *hc)
 {
-    CommandFChain(state, hc, hc->EFG << 2);
+    CommandFChain(state, hc, hc->EfxMem_EFG << 2);
 }
 
 static void VolumeCommandG(it_state_t *state, hostChn_t *hc)
@@ -6910,9 +6928,7 @@ static void VolumeCommandG(it_state_t *state, hostChn_t *hc)
     if (!(hc->Flags & HF_PITCH_SLIDE_ONGOING))
         return;
 
-    int16_t SlideValue = hc->EFG << 2;
-    if (state->Song.Header.Flags & ITF_COMPAT_GXX)
-        SlideValue = hc->GOE << 2;
+    int16_t SlideValue = (state->Song.Header.Flags & ITF_COMPAT_GXX) ? (hc->EfxMem_G_Compat << 2) : (hc->EfxMem_EFG << 2);
 
     if (SlideValue == 0)
         return;
@@ -6963,8 +6979,8 @@ static void InitNoCommand3(it_state_t *state, hostChn_t *hc, uint8_t hcFlags)
 
 static void NoOldEffect(it_state_t *state, hostChn_t *hc, uint8_t hcFlags)
 {
-    uint8_t vol = hc->Vol;
-    if (!((hc->NotePackMask & 0x44) && vol <= 64)) // 8bb: improve this yucky logic...
+    uint8_t vol = hc->RawVolColumn;
+    if (!(hc->NotePackMask & 0x44) || vol > 64)
     {
         if ((hc->NotePackMask & 0x44) && (vol & 0x7F) < 65)
         {
@@ -7068,7 +7084,8 @@ static void InitNoCommand(it_state_t *state, hostChn_t *hc)
         }
     }
 
-    if ((hc->NotePackMask & 0x44) && hc->Vol >= 193 && hc->Vol <= 202 && (hc->Flags & HF_CHAN_ON))
+    bool volColumnPortamento = (hc->RawVolColumn >= 193 && hc->RawVolColumn <= 202);
+    if ((hc->NotePackMask & 0x44) && volColumnPortamento && (hc->Flags & HF_CHAN_ON))
     {
         InitVolumeEffect(state, hc);
         return;
@@ -7117,11 +7134,6 @@ static void InitCommandA(it_state_t *state, hostChn_t *hc)
 
 static void InitCommandB(it_state_t *state, hostChn_t *hc)
 {
-    /*
-    if (hc->CmdVal <= state->Song.CurrentOrder)
-        state->Song.StopSong = true; // 8bb: for WAV writer
-    */
-
     state->Song.ProcessOrder = hc->CmdVal - 1;
     state->Song.ProcessRow   = 0xFFFE;
 
@@ -7145,9 +7157,9 @@ static void InitCommandD(it_state_t *state, hostChn_t *hc)
 
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal == 0)
-        CmdVal = hc->DKL;
+        CmdVal = hc->EfxMem_DKL;
 
-    hc->DKL = CmdVal;
+    hc->EfxMem_DKL = CmdVal;
 
     if (!(hc->Flags & HF_CHAN_ON))
         return;
@@ -7162,25 +7174,25 @@ static void InitCommandE(it_state_t *state, hostChn_t *hc)
 
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal == 0)
-        CmdVal = hc->EFG;
+        CmdVal = hc->EfxMem_EFG;
 
-    hc->EFG = CmdVal;
+    hc->EfxMem_EFG = CmdVal;
 
-    if (!(hc->Flags & HF_CHAN_ON) || hc->EFG == 0)
+    if (!(hc->Flags & HF_CHAN_ON) || hc->EfxMem_EFG == 0)
         return;
 
-    if ((hc->EFG & 0xF0) < 0xE0)
+    if ((hc->EfxMem_EFG & 0xF0) < 0xE0)
     {
-        *(uint16_t *)&hc->MiscEfxData[0] = hc->EFG << 2;
+        *(uint16_t *)&hc->MiscEfxData[0] = hc->EfxMem_EFG << 2;
         hc->Flags |= HF_UPDATE_EFX_IF_CHAN_ON; // call update only if necess.
         return;
     }
 
-    if ((hc->EFG & 0x0F) == 0)
+    if ((hc->EfxMem_EFG & 0x0F) == 0)
         return;
 
-    uint16_t SlideVal = hc->EFG & 0x0F;
-    if ((hc->EFG & 0xF0) != 0xE0)
+    uint16_t SlideVal = hc->EfxMem_EFG & 0x0F;
+    if ((hc->EfxMem_EFG & 0xF0) != 0xE0)
         SlideVal <<= 2;
 
     slaveChn_t *sc = (slaveChn_t *)hc->SlaveChnPtr;
@@ -7194,25 +7206,25 @@ static void InitCommandF(it_state_t *state, hostChn_t *hc)
 
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal == 0)
-        CmdVal = hc->EFG;
+        CmdVal = hc->EfxMem_EFG;
 
-    hc->EFG = CmdVal;
+    hc->EfxMem_EFG = CmdVal;
 
-    if (!(hc->Flags & HF_CHAN_ON) || hc->EFG == 0)
+    if (!(hc->Flags & HF_CHAN_ON) || hc->EfxMem_EFG == 0)
         return;
 
-    if ((hc->EFG & 0xF0) < 0xE0)
+    if ((hc->EfxMem_EFG & 0xF0) < 0xE0)
     {
-        *(uint16_t *)&hc->MiscEfxData[0] = hc->EFG << 2;
+        *(uint16_t *)&hc->MiscEfxData[0] = hc->EfxMem_EFG << 2;
         hc->Flags |= HF_UPDATE_EFX_IF_CHAN_ON; // call update only if necess.
         return;
     }
 
-    if ((hc->EFG & 0x0F) == 0)
+    if ((hc->EfxMem_EFG & 0x0F) == 0)
         return;
 
-    uint16_t SlideVal = hc->EFG & 0x0F;
-    if ((hc->EFG & 0xF0) != 0xE0)
+    uint16_t SlideVal = hc->EfxMem_EFG & 0x0F;
+    if ((hc->EfxMem_EFG & 0xF0) != 0xE0)
         SlideVal <<= 2;
 
     slaveChn_t *sc = (slaveChn_t *)hc->SlaveChnPtr;
@@ -7246,7 +7258,7 @@ static bool Gxx_ChangeSample(it_state_t *state, hostChn_t *hc, slaveChn_t *sc, u
         return false;
     }
 
-    sc->SmpBitDepth = s->Flags & SMPF_16BIT;
+    sc->SmpIs16Bit = !!(s->Flags & SMPF_16BIT);
     GetLoopInformation(state, sc);
 
     return true;
@@ -7318,7 +7330,7 @@ static void InitCommandG11(it_state_t *state, hostChn_t *hc) // Jumped to from L
     {
         // OK. Time to calc freq.
 
-        if (hc->TranslatedNote <= 119)
+        if (hc->TranslatedNote < 120)
         {
             // Don't overwrite note if MIDI!
             if (hc->Smp != 101)
@@ -7349,19 +7361,19 @@ static void InitCommandG11(it_state_t *state, hostChn_t *hc) // Jumped to from L
     }
 
     bool    volFromVolColumn = false;
-    uint8_t vol              = 0; // 8bb: set to 0, just to make the compiler happy..
+    uint8_t vol = 0; // 8bb: pre-initialize to prevent compiler warnings
 
     if (hc->NotePackMask & 0x44)
     {
-        if (hc->Vol <= 64)
+        if (hc->RawVolColumn <= 64)
         {
-            vol              = hc->Vol;
+            vol              = hc->RawVolColumn;
             volFromVolColumn = true;
         }
         else
         {
-            if ((hc->Vol & 0x7F) < 65)
-                InitCommandX2(state, hc, hc->Vol - 128);
+            if ((hc->RawVolColumn & 0x7F) < 65)
+                InitCommandX2(state, hc, hc->RawVolColumn - 128);
         }
     }
 
@@ -7378,11 +7390,7 @@ static void InitCommandG11(it_state_t *state, hostChn_t *hc) // Jumped to from L
     {
         // Work out magnitude + dirn
 
-        uint16_t SlideSpeed;
-        if (state->Song.Header.Flags & ITF_COMPAT_GXX) // Command G memory
-            SlideSpeed = hc->GOE << 2;
-        else
-            SlideSpeed = hc->EFG << 2;
+        uint16_t SlideSpeed = (state->Song.Header.Flags & ITF_COMPAT_GXX) ? (hc->EfxMem_G_Compat << 2) : (hc->EfxMem_EFG << 2);
 
         if (SlideSpeed > 0)
         {
@@ -7411,9 +7419,9 @@ static void InitCommandG(it_state_t *state, hostChn_t *hc)
     if (hc->CmdVal != 0)
     {
         if (state->Song.Header.Flags & ITF_COMPAT_GXX) // Compatibility Gxx?
-            hc->GOE = hc->CmdVal;
+            hc->EfxMem_G_Compat = hc->CmdVal;
         else
-            hc->EFG = hc->CmdVal;
+            hc->EfxMem_EFG = hc->CmdVal;
     }
 
     if (!(hc->Flags & HF_CHAN_ON))
@@ -7427,7 +7435,7 @@ static void InitCommandG(it_state_t *state, hostChn_t *hc)
 
 static void InitCommandH(it_state_t *state, hostChn_t *hc)
 {
-    if ((hc->NotePackMask & 0x11) && hc->RawNote <= 119)
+    if ((hc->NotePackMask & 0x11) && hc->RawNote < 120)
         hc->VibratoPos = hc->LastVibratoData = 0;
 
     uint8_t speed = (hc->CmdVal >> 4) << 2;
@@ -7459,14 +7467,14 @@ static void InitCommandI(it_state_t *state, hostChn_t *hc)
 
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal > 0)
-        hc->I00 = CmdVal;
+        hc->EfxMem_I = CmdVal;
 
     if (hc->Flags & HF_CHAN_ON)
     {
         hc->Flags |= HF_UPDATE_EFX_IF_CHAN_ON;
 
-        uint8_t OffTime = hc->I00 & 0x0F;
-        uint8_t OnTime  = hc->I00 >> 4;
+        uint8_t OffTime = hc->EfxMem_I & 0x0F;
+        uint8_t OnTime = hc->EfxMem_I >> 4;
 
         if (state->Song.Header.Flags & ITF_OLD_EFFECTS)
         {
@@ -7489,9 +7497,9 @@ static void InitCommandJ(it_state_t *state, hostChn_t *hc)
 
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal == 0)
-        CmdVal = hc->J00;
+        CmdVal = hc->EfxMem_J;
 
-    hc->J00 = CmdVal;
+    hc->EfxMem_J = CmdVal;
 
     if (hc->Flags & HF_CHAN_ON)
     {
@@ -7501,15 +7509,15 @@ static void InitCommandJ(it_state_t *state, hostChn_t *hc)
         ** but we store notes instead because we work with bigger pointer sizes.
         ** The outcome is the same.
         */
-        *(uint16_t *)&hc->MiscEfxData[2] = 60 + (hc->J00 >> 4);   // 8bb: Tick 1 note
-        *(uint16_t *)&hc->MiscEfxData[4] = 60 + (hc->J00 & 0x0F); // 8bb: Tick 2 note
+        *(uint16_t *)&hc->MiscEfxData[2] = 60 + (hc->EfxMem_J >> 4);   // 8bb: Tick 1 note
+        *(uint16_t *)&hc->MiscEfxData[4] = 60 + (hc->EfxMem_J & 0x0F); // 8bb: Tick 2 note
     }
 }
 
 static void InitCommandK(it_state_t *state, hostChn_t *hc)
 {
     if (hc->CmdVal > 0)
-        hc->DKL = hc->CmdVal;
+        hc->EfxMem_DKL = hc->CmdVal;
 
     InitNoCommand(state, hc);
 
@@ -7526,7 +7534,7 @@ static void InitCommandL(it_state_t *state, hostChn_t *hc)
 {
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal > 0)
-        hc->DKL = CmdVal;
+        hc->EfxMem_DKL = CmdVal;
 
     if (hc->Flags & HF_CHAN_ON)
     {
@@ -7561,12 +7569,12 @@ static void InitCommandN(it_state_t *state, hostChn_t *hc)
 {
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal > 0)
-        hc->N00 = CmdVal;
+        hc->EfxMem_N = CmdVal;
 
     InitNoCommand(state, hc);
 
-    uint8_t hi = hc->N00 & 0xF0;
-    uint8_t lo = hc->N00 & 0x0F;
+    uint8_t hi = hc->EfxMem_N & 0xF0;
+    uint8_t lo = hc->EfxMem_N & 0x0F;
 
     if (lo == 0)
     {
@@ -7600,9 +7608,9 @@ static void InitCommandO(it_state_t *state, hostChn_t *hc)
 {
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal == 0)
-        CmdVal = hc->O00;
+        CmdVal = hc->EfxMem_O;
 
-    hc->O00 = CmdVal;
+    hc->EfxMem_O = CmdVal;
 
     InitNoCommand(state, hc);
 
@@ -7610,7 +7618,7 @@ static void InitCommandO(it_state_t *state, hostChn_t *hc)
     {
         slaveChn_t *sc = (slaveChn_t *)hc->SlaveChnPtr;
 
-        int32_t offset = ((hc->HighSmpOffs << 8) | hc->O00) << 8;
+        int32_t offset = ((hc->HighSmpOffs << 8) | hc->EfxMem_O) << 8;
         if (offset >= sc->LoopEnd)
         {
             if (!(state->Song.Header.Flags & ITF_OLD_EFFECTS))
@@ -7629,7 +7637,7 @@ static void InitCommandP(it_state_t *state, hostChn_t *hc)
 {
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal > 0)
-        hc->P00 = CmdVal;
+        hc->EfxMem_P = CmdVal;
 
     InitNoCommand(state, hc);
 
@@ -7637,11 +7645,11 @@ static void InitCommandP(it_state_t *state, hostChn_t *hc)
     if (hc->Flags & HF_CHAN_ON)
         pan = ((slaveChn_t *)hc->SlaveChnPtr)->PanSet;
 
-    if (pan == PAN_SURROUND) // Surround??
+    if (pan == PAN_SURROUND)
         return;
 
-    uint8_t hi = hc->P00 & 0xF0;
-    uint8_t lo = hc->P00 & 0x0F;
+    uint8_t hi = hc->EfxMem_P & 0xF0;
+    uint8_t lo = hc->EfxMem_P & 0x0F;
 
     if (lo == 0)
     {
@@ -7676,7 +7684,7 @@ static void InitCommandQ(it_state_t *state, hostChn_t *hc)
     InitNoCommand(state, hc);
 
     if (hc->CmdVal > 0)
-        hc->Q00 = hc->CmdVal;
+        hc->EfxMem_Q = hc->CmdVal;
 
     if (!(hc->Flags & HF_CHAN_ON))
         return;
@@ -7684,12 +7692,12 @@ static void InitCommandQ(it_state_t *state, hostChn_t *hc)
     hc->Flags |= HF_UPDATE_EFX_IF_CHAN_ON;
 
     if (hc->NotePackMask & 0x11)
-        hc->RetrigCount = hc->Q00 & 0x0F;
+        hc->RetrigCount = hc->EfxMem_Q & 0x0F;
     else
         CommandQ(state, hc);
 }
 
-static void InitTremelo(it_state_t *state, hostChn_t *hc)
+static void InitTremolo(it_state_t *state, hostChn_t *hc)
 {
     if (state->Song.Header.Flags & ITF_OLD_EFFECTS)
     {
@@ -7720,7 +7728,7 @@ static void InitCommandR(it_state_t *state, hostChn_t *hc)
     if (hc->Flags & HF_CHAN_ON)
     {
         hc->Flags |= HF_UPDATE_EFX_IF_CHAN_ON;
-        InitTremelo(state, hc);
+        InitTremolo(state, hc);
     }
 }
 
@@ -7728,9 +7736,9 @@ static void InitCommandS(it_state_t *state, hostChn_t *hc)
 {
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal == 0)
-        CmdVal = hc->S00;
+        CmdVal = hc->EfxMem_S;
 
-    hc->S00 = CmdVal;
+    hc->EfxMem_S = CmdVal;
 
     uint8_t cmd = CmdVal & 0xF0;
     uint8_t val = CmdVal & 0x0F;
@@ -7756,7 +7764,7 @@ static void InitCommandS(it_state_t *state, hostChn_t *hc)
     }
     break;
 
-    case 0x40: // set tremelo waveform
+    case 0x40: // set tremolo waveform
     {
         if (val <= 3)
             hc->TremoloWaveform = val;
@@ -8005,7 +8013,7 @@ static void InitCommandS(it_state_t *state, hostChn_t *hc)
 
     case 0xF0: // MIDI Macro select
     {
-        hc->SFx = val;
+        hc->EfxMem_SFx = val;
         InitNoCommand(state, hc);
     }
     break;
@@ -8016,9 +8024,9 @@ static void InitCommandT(it_state_t *state, hostChn_t *hc)
 {
     uint8_t CmdVal = hc->CmdVal;
     if (CmdVal == 0)
-        CmdVal = hc->T00;
+        CmdVal = hc->EfxMem_T;
 
-    hc->T00 = CmdVal;
+    hc->EfxMem_T = CmdVal;
 
     if (CmdVal >= 0x20)
     {
@@ -8077,13 +8085,13 @@ static void InitCommandW(it_state_t *state, hostChn_t *hc)
     InitNoCommand(state, hc);
 
     if (hc->CmdVal > 0)
-        hc->W00 = hc->CmdVal;
+        hc->EfxMem_W = hc->CmdVal;
 
-    if (hc->W00 == 0)
+    if (hc->EfxMem_W == 0)
         return;
 
-    uint8_t hi = hc->W00 & 0xF0;
-    uint8_t lo = hc->W00 & 0x0F;
+    uint8_t hi = hc->EfxMem_W & 0xF0;
+    uint8_t lo = hc->EfxMem_W & 0x0F;
 
     if (lo == 0)
     {
@@ -8166,7 +8174,7 @@ static void InitCommandZ(it_state_t *state, hostChn_t *hc) // Macros start at 12
     if (hc->CmdVal >= 0x80) // Macros!
         MIDITranslate(state, hc, sc, 0x320 + ((hc->CmdVal & 0x7F) << 5));
     else
-        MIDITranslate(state, hc, sc, 0x120 + ((hc->SFx & 0xF) << 5));
+        MIDITranslate(state, hc, sc, 0x120 + ((hc->EfxMem_SFx & 0xF) << 5));
 }
 
 static void CommandD(it_state_t *state, hostChn_t *hc)
@@ -8378,7 +8386,7 @@ static void CommandQ(it_state_t *state, hostChn_t *hc)
         return;
 
     // OK... reset counter.
-    hc->RetrigCount = hc->Q00 & 0x0F;
+    hc->RetrigCount = hc->EfxMem_Q & 0x0F;
 
     // retrig count done.
 
@@ -8418,7 +8426,7 @@ static void CommandQ(it_state_t *state, hostChn_t *hc)
     sc->Flags |= (SF_RECALC_FINALVOL | SF_NEW_NOTE | SF_LOOP_CHANGED);
 
     uint8_t vol = sc->VolSet;
-    switch (hc->Q00 >> 4)
+    switch (hc->EfxMem_Q >> 4)
     {
     default:
     case 0x0:
@@ -8509,7 +8517,7 @@ static void CommandR(it_state_t *state, hostChn_t *hc)
     else
         TremoloData = FineSineData[(hc->TremoloWaveform << 8) + hc->TremoloPos];
 
-    hc->LastTremoloData = TremoloData; // Save last tremelo
+    hc->LastTremoloData = TremoloData; // Save last tremolo
     CommandR2(state, hc, sc, TremoloData);
 }
 
@@ -8556,17 +8564,17 @@ static void CommandT(it_state_t *state, hostChn_t *hc)
 {
     int16_t Tempo = state->Song.Tempo;
 
-    if (hc->T00 & 0xF0)
+    if (hc->EfxMem_T & 0xF0)
     {
         // Slide Up
-        Tempo += hc->T00 - 16;
+        Tempo += hc->EfxMem_T - 16;
         if (Tempo > 255)
             Tempo = 255;
     }
     else
     {
         // Slide Down
-        Tempo -= hc->T00;
+        Tempo -= hc->EfxMem_T;
         if (Tempo < 32)
             Tempo = 32;
     }
@@ -8663,6 +8671,7 @@ static void Music_SetDefaultMIDIDataArea(it_state_t *state) // 8bb: added this
     memcpy(&state->MIDIDataArea[1 * 32], "FC", 2);
     memcpy(&state->MIDIDataArea[3 * 32], "9c n v", 6);
     memcpy(&state->MIDIDataArea[4 * 32], "9c n 0", 6);
+    memcpy(&state->MIDIDataArea[7 * 32], "Bc 0 a 20 b", 11);
     memcpy(&state->MIDIDataArea[8 * 32], "Cc p", 4);
 
     // macro setup (SF0)
@@ -8891,7 +8900,7 @@ static void MIDITranslate(it_state_t *state, hostChn_t *hc, slaveChn_t *sc, uint
         }
         else if (Byte == 'o' - 'a') // 8bb: sample offset?
         {
-            MIDISendFilter(state, hc, sc, hc->O00);
+            MIDISendFilter(state, hc, sc, hc->EfxMem_O);
         }
         else if (sc != NULL)
         {
@@ -8912,14 +8921,14 @@ static void MIDITranslate(it_state_t *state, hostChn_t *hc, slaveChn_t *sc, uint
                 else
                 {
                     uint16_t volume = (sc->VolSet * state->Song.GlobalVolume * sc->ChnVol) >> 4;
-                    volume          = (volume * sc->SmpVol) >> 15;
+                    uint8_t value = (volume * sc->SmpVol) >> 15;
 
-                    if (volume == 0)
-                        volume = 1;
-                    else if (volume >= 128)
-                        volume = 127;
+                    if (value == 0)
+                        value = 1;
+                    else if (value >= 128)
+                        value--;
 
-                    MIDISendFilter(state, hc, sc, (uint8_t)volume);
+                    MIDISendFilter(state, hc, sc, value);
                 }
             }
             else if (Byte == 'u' - 'a') // Volume?
@@ -8930,14 +8939,14 @@ static void MIDITranslate(it_state_t *state, hostChn_t *hc, slaveChn_t *sc, uint
                 }
                 else
                 {
-                    uint16_t volume = sc->FinalVol7Bit;
+                    uint8_t value = sc->FinalVol128;
 
-                    if (volume == 0)
-                        volume = 1;
-                    else if (volume >= 128)
-                        volume = 127;
+                    if (value == 0)
+                        value = 1;
+                    else if (value >= 128)
+                        value--;
 
-                    MIDISendFilter(state, hc, sc, (uint8_t)volume);
+                    MIDISendFilter(state, hc, sc, value);
                 }
             }
             else if (Byte == 'h' - 'a') // HCN (8bb: host channel number)
@@ -8946,14 +8955,14 @@ static void MIDITranslate(it_state_t *state, hostChn_t *hc, slaveChn_t *sc, uint
             }
             else if (Byte == 'x' - 'a')       // Pan set
             {
-                uint16_t value = sc->Pan * 2; // 8bb: yes sc->Pan, not sc->PS
+                uint8_t value = (uint8_t)(sc->Pan * 2); // 8bb: yes, sc->Pan (not sc->PanSet)
                 if (value >= 128)
                     value--;
 
                 if (value >= 128)
                     value = 64;
 
-                MIDISendFilter(state, hc, sc, (uint8_t)value);
+                MIDISendFilter(state, hc, sc, value);
             }
             else if (Byte == 'p' - 'a') // Program?
             {
@@ -9122,7 +9131,7 @@ static slaveChn_t *AllocateChannelSample(it_state_t *state, hostChn_t *hc, uint8
         sc->Smp     = hc->Smp - 1;
         sample_t *s = sc->SmpPtr = &state->Song.Smp[sc->Smp];
 
-        sc->SmpBitDepth      = 0;          // 8bb: 8-bit
+        sc->SmpIs16Bit = false;
         sc->AutoVibratoDepth = sc->AutoVibratoPos = 0;
         sc->PanEnvState.Value &= 0xFFFF;   // No pan deviation (8bb: keeps frac)
         sc->PitchEnvState.Value &= 0xFFFF; // No pitch deviation (8bb: keeps frac)
@@ -9135,7 +9144,7 @@ static slaveChn_t *AllocateChannelSample(it_state_t *state, hostChn_t *hc, uint8
             return NULL;
         }
 
-        sc->SmpBitDepth = s->Flags & SMPF_16BIT;
+        sc->SmpIs16Bit = !!(s->Flags & SMPF_16BIT);
         sc->SmpVol      = s->GlobVol * 2;
         return sc;
     }
@@ -9156,7 +9165,7 @@ static slaveChn_t *AllocateChannelInstrument(it_state_t *state, hostChn_t *hc, s
     sc->HostChnNum  = hc->HostChnNum;
     sc->HostChnPtr  = hc;
 
-    sc->SmpBitDepth      = 0;                                 // 8bb: 8-bit
+    sc->SmpIs16Bit = false;
     sc->AutoVibratoDepth = sc->AutoVibratoPos = 0;
     sc->LoopDirection                         = DIR_FORWARDS; // Reset loop dirn
 
@@ -9186,7 +9195,7 @@ static slaveChn_t *AllocateChannelInstrument(it_state_t *state, hostChn_t *hc, s
         return NULL;
     }
 
-    sc->SmpBitDepth = s->Flags & SMPF_16BIT;
+    sc->SmpIs16Bit = !!(s->Flags & SMPF_16BIT);
     sc->SmpVol      = (s->GlobVol * sc->SmpVol) >> 6; // 0->128
     return sc;
 }
@@ -9347,18 +9356,14 @@ static slaveChn_t *AllocateChannel(it_state_t *state, hostChn_t *hc, uint8_t *hc
 
             if (ins->DCT == DCT_NOTE)
             {
-                DCVal = hc->RawNote; // 8bb: not the translated note!
+                DCVal = hc->RawNote; // 8bb: yes, raw note, not the translated note!
             }
             else if (ins->DCT == DCT_INSTRUMENT)
             {
                 DCVal = hc->Ins;
             }
-            else
+            else // 8bb: DCT_SAMPLE (or any other number, like DCT=4 from OpenMPT, which is unsupported)
             {
-                /* 8bb:
-                ** .ITs from OpenMPT can have DCT=4, which tests for duplicate instrument plugins.
-                ** This will be handled as DCT_SAMPLE in Impulse Tracker. Oops...
-                */
                 DCVal = hc->Smp - 1;
                 if ((int8_t)DCVal < 0)
                     break; // 8bb: illegal (or no) sample, ignore dupe test and find available voice now
@@ -9381,7 +9386,7 @@ static slaveChn_t *AllocateChannel(it_state_t *state, hostChn_t *hc, uint8_t *hc
                 }
                 else
                 {
-                    sc->DCT = DCT_DISABLED; // 8bb: turn of dupe check so that we don't do infinite NNA tests :)
+                    sc->DCT = DCT_DISABLED; // 8bb: turn off dupe check to prevent further NNA testing
                     sc->DCA = DCA_NOTE_CUT;
                     NNA     = ins->DCA + 1;
                 }
@@ -9434,10 +9439,10 @@ static slaveChn_t *AllocateChannel(it_state_t *state, hostChn_t *hc, uint8_t *hc
             continue;
 
         state->ChannelCountTable[sc->Smp]++;
-        if ((sc->HostChnNum & CHN_DISOWNED) && sc->FinalVol7Bit < state->ChannelVolumeTable[sc->Smp])
+        if ((sc->HostChnNum & CHN_DISOWNED) && sc->FinalVol128 < state->ChannelVolumeTable[sc->Smp])
         {
             state->ChannelLocationTable[sc->Smp] = sc;
-            state->ChannelVolumeTable[sc->Smp]   = sc->FinalVol7Bit;
+            state->ChannelVolumeTable[sc->Smp]   = sc->FinalVol128;
         }
     }
 
@@ -9493,10 +9498,10 @@ static slaveChn_t *AllocateChannel(it_state_t *state, hostChn_t *hc, uint8_t *hc
             lowestVol = 255;
             for (uint32_t i = 0; i < state->AllocateNumChannels; i++, scTmp++)
             {
-                if ((scTmp->HostChnNum & CHN_DISOWNED) && scTmp->FinalVol7Bit <= lowestVol)
+                if ((scTmp->HostChnNum & CHN_DISOWNED) && scTmp->FinalVol128 <= lowestVol)
                 {
                     sc        = scTmp;
-                    lowestVol = scTmp->FinalVol7Bit;
+                    lowestVol = scTmp->FinalVol128;
                 }
             }
 
@@ -9518,7 +9523,7 @@ static slaveChn_t *AllocateChannel(it_state_t *state, hostChn_t *hc, uint8_t *hc
         slaveChn_t *scTmp = state->AllocateSlaveOffset;
         for (uint32_t i = 0; i < state->AllocateNumChannels; i++, scTmp++)
         {
-            if (scTmp->HostChnNum != hostChnNum || scTmp->FinalVol7Bit >= lowestVol)
+            if (scTmp->HostChnNum != hostChnNum || scTmp->FinalVol128 >= lowestVol)
                 continue;
 
             // Now check if any other channel contains this sample
@@ -9526,7 +9531,7 @@ static slaveChn_t *AllocateChannel(it_state_t *state, hostChn_t *hc, uint8_t *hc
             if (scTmp->Smp == targetSmp)
             {
                 sc        = scTmp;
-                lowestVol = scTmp->FinalVol7Bit;
+                lowestVol = scTmp->FinalVol128;
                 continue;
             }
 
@@ -9540,7 +9545,7 @@ static slaveChn_t *AllocateChannel(it_state_t *state, hostChn_t *hc, uint8_t *hc
                 {
                     // OK found a second sample.
                     sc        = scTmp;
-                    lowestVol = scTmp->FinalVol7Bit;
+                    lowestVol = scTmp->FinalVol128;
                     break;
                 }
             }
@@ -9553,17 +9558,17 @@ static slaveChn_t *AllocateChannel(it_state_t *state, hostChn_t *hc, uint8_t *hc
         state->ChannelCountTable[hostChnNum & 63] = 0; // Next cycle...
     }
 
-    // 8bb: we have a slave channel in sc at this point
+    // 8bb: we have a target channel in sc at this point
 
     lowestVol = 255;
 
     slaveChn_t *scTmp = state->AllocateSlaveOffset;
     for (uint32_t i = 0; i < state->AllocateNumChannels; i++, scTmp++)
     {
-        if (scTmp->Smp == sc->Smp && (scTmp->HostChnNum & CHN_DISOWNED) && scTmp->FinalVol7Bit < lowestVol)
+        if (scTmp->Smp == sc->Smp && (scTmp->HostChnNum & CHN_DISOWNED) && scTmp->FinalVol128 < lowestVol)
         {
             sc        = scTmp;
-            lowestVol = scTmp->FinalVol7Bit;
+            lowestVol = scTmp->FinalVol128;
         }
     }
 
@@ -9711,18 +9716,18 @@ static void PitchSlideUp(it_state_t *state, hostChn_t *hc, slaveChn_t *sc, int16
 
             FreqSlide64 += PeriodBase;
 
-            uint32_t ShitValue = 0;
+            uint32_t ShiftValue = 0;
             while (FreqSlide64 > UINT32_MAX)
             {
                 FreqSlide64 >>= 1;
-                ShitValue++;
+                ShiftValue++;
             }
 
             uint32_t Temp32 = (uint32_t)FreqSlide64;
             uint64_t Temp64 = (uint64_t)sc->Frequency * (uint32_t)PeriodBase;
 
-            if (ShitValue > 0)
-                Temp64 >>= ShitValue;
+            if (ShiftValue > 0)
+                Temp64 >>= ShiftValue;
 
             if (Temp32 <= Temp64 >> 32)
             {
@@ -9925,7 +9930,7 @@ static void UpdateGOTONote(it_state_t *state) // Get offset
                 hc->Ins = *p++;
 
             if (hc->NotePackMask & 4)
-                hc->Vol = *p++;
+                hc->RawVolColumn = *p++;
 
             if (hc->NotePackMask & 8)
             {
@@ -9969,7 +9974,7 @@ static void UpdateNoteData(it_state_t *state)
             hc->Ins = *p++;
 
         if (hc->NotePackMask & 4)
-            hc->Vol = *p++;
+            hc->RawVolColumn = *p++;
 
         if (hc->NotePackMask & 8)
         {
@@ -9995,7 +10000,7 @@ static void UpdateNoteData(it_state_t *state)
 
 static void UpdateData(it_state_t *state)
 {
-    // 8bb: I only added the logic for "Play Song" (2) mode
+    // 8bb: I only ported the logic for "Play Song" mode (mode=2)
 
     state->Song.ProcessTick--;
     state->Song.CurrentTick--;
@@ -10130,7 +10135,7 @@ static bool UpdateEnvelope(env_t *env, envState_t *envState, bool SustainRelease
     envState->Value  = Nodes[envState->CurNode & 0x00FF].Magnitude << 16;
     int16_t NextNode = (envState->CurNode & 0x00FF) + 1;
 
-    if (env->Flags & 6) // 8bb: any loop at all?
+    if (env->Flags & (ENVF_LOOP | ENVF_SUSTAINLOOP)) // 8bb: any loop at all?
     {
         uint8_t LoopBegin = env->LoopBegin;
         uint8_t LoopEnd   = env->LoopEnd;
@@ -10218,7 +10223,7 @@ static void UpdateInstruments(it_state_t *state)
                 EnvVal >>= 6;        // 8bb: arithmetic shift, -128..128 (though -512..511 is in theory possible)
 
                 /*
-                ** 8bb: Some annoying logic.
+                ** 8bb: Annoying upper-clamp logic.
                 **
                 ** Original asm code:
                 **  add bx,128
@@ -10230,7 +10235,8 @@ static void UpdateInstruments(it_state_t *state)
                 **
                 ** However, EnvVal should only be -128..128
                 ** (0..256 after +128 add) unless something
-                ** nasty is going on.
+                ** nasty is going on. Let's still implement
+                ** this behavior, just in case.
                 */
                 EnvVal += 128;
                 if (EnvVal & 0xFF00)
@@ -10333,8 +10339,8 @@ static void UpdateInstruments(it_state_t *state)
             volume          = (volume * state->Song.GlobalVolume) >> 7;
             assert(volume <= 32768);
 
-            sc->FinalVol15Bit = volume;      // 8bb: 0..32768
-            sc->FinalVol7Bit  = volume >> 8; // 8bb: 0..128
+            sc->FinalVol32768 = volume;      // 8bb: 0..32768
+            sc->FinalVol128  = volume >> 8; // 8bb: 0..128
         }
 
         if (sc->Flags & SF_RECALC_PAN)       // Change in panning?
@@ -10386,8 +10392,8 @@ static void UpdateSamples(it_state_t *state) // 8bb: for songs without instrumen
             uint16_t volume = (((sc->Vol * sc->ChnVol * sc->SmpVol) >> 4) * state->Song.GlobalVolume) >> 7;
             assert(volume <= 32768);
 
-            sc->FinalVol15Bit = volume;      // 8bb: 0..32768
-            sc->FinalVol7Bit  = volume >> 8; // 8bb: 0..128
+            sc->FinalVol32768 = volume;      // 8bb: 0..32768
+            sc->FinalVol128  = volume >> 8; // 8bb: 0..128
         }
 
         if (sc->Flags & SF_RECALC_PAN)       // 8bb: recalculate panning
@@ -12207,7 +12213,7 @@ bool Music_LoadFromState(it_state_t *state)
 //-----------------------------------------------------------------------------------
 
 /* Bit-accurate IT2 tables. Copied from IT2 source code.
-** All of the comments in this file are written by me (8bitbubsy)
+** All of the comments in this file are written by myself (8bitbubsy)
 */
 
 /* Formula:
