@@ -5495,7 +5495,7 @@ static const uint8_t arpTab[256] = {
     sample2 -= sample;                                                                                                 \
     sample2 *= (int32_t)sc->Frac32;                                                                                    \
     sample2 >>= MIX_FRAC_BITS - 8;                                                                                     \
-    sample <<= 8;                                                                                                      \
+    sample *= 256;                                                                                                     \
     sample += sample2;
 
 #define Get32Bit16Waveform                                                                                             \
@@ -11966,12 +11966,13 @@ static bool GetPatternLength(it_state_t *state, uint16_t Rows, uint16_t *LengthO
                 }
             }
 
-            uint16_t EfxAndParam = *(uint16_t *)&Src[3];
+            uint16_t EfxAndParam;
+            memcpy(&EfxAndParam, &Src[3], sizeof(EfxAndParam));
             if (EfxAndParam != 0)
             {
-                if (*(uint16_t *)&Enc[4] != EfxAndParam)
+                if (memcmp(&Enc[4], &EfxAndParam, sizeof(EfxAndParam)) != 0)
                 {
-                    *(uint16_t *)&Enc[4] = EfxAndParam;
+                    memcpy(&Enc[4], &EfxAndParam, sizeof(EfxAndParam));
                     Bytes += 2;
                     Mask |= 8;
                 }
@@ -12057,12 +12058,13 @@ static void EncodePattern(it_state_t *state, pattern_t *p, uint8_t Rows)
                 }
             }
 
-            uint16_t EfxAndParam = *(uint16_t *)&Src[3];
+            uint16_t EfxAndParam;
+            memcpy(&EfxAndParam, &Src[3], sizeof(EfxAndParam));
             if (EfxAndParam != 0)
             {
-                if (EfxAndParam != *(uint16_t *)&Enc[4])
+                if (memcmp(&EfxAndParam, &Enc[4], sizeof(EfxAndParam)) != 0)
                 {
-                    *(uint16_t *)&Enc[4] = EfxAndParam;
+                    memcpy(&Enc[4], &EfxAndParam, sizeof(EfxAndParam));
                     Mask |= 8;
                 }
                 else
@@ -12094,7 +12096,7 @@ static void EncodePattern(it_state_t *state, pattern_t *p, uint8_t Rows)
 
             if (Mask & 8)
             {
-                *(uint16_t *)Dst = EfxAndParam;
+                memcpy(Dst, &EfxAndParam, sizeof(EfxAndParam));
                 Dst += 2;
             }
         }
